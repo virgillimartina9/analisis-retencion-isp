@@ -1,0 +1,50 @@
+# ---------------------------------------------------------------- Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ---------------------------------------------------------------- Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+.env
+
+# ---------------------------------------------------------------- Power BI
+# Archivos temporales que Power BI Desktop crea mientras el .pbix está abierto.
+# El .pbix SÍ se versiona: es el entregable principal del proyecto.
+*.pbix.tmp
+~$*.pbix
+*.pbix.lock
+
+# ---------------------------------------------------------------- SQL Server
+*.mdf
+*.ldf
+*.ndf
+*.bak
+
+# ---------------------------------------------------------------- Office
+~$*.xlsx
+~$*.docx
+~$*.pptx
+
+# ---------------------------------------------------------------- Editores
+.vscode/
+.idea/
+*.swp
+
+# ---------------------------------------------------------------- Datos
+# DECISIÓN: los CSV de datos/raw/ SÍ se versionan (10 MB en total, muy por
+# debajo del límite de GitHub). Motivo: que cualquiera pueda clonar el repo y
+# reproducir el análisis sin ejecutar nada. Si el dataset creciera, se quitan
+# de acá y se regeneran con generador_datos.py.
+#
+# Lo que sí se ignora son los archivos intermedios y las exportaciones sueltas.
+datos/processed/*.csv
+!datos/processed/.gitkeep
+datos/**/*.parquet
+*.tmp
+exports/

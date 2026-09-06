@@ -1,0 +1,7 @@
+id_plan,nombre_plan,tipo_plan,velocidad_mbps,precio_base
+P01,Básico 50,Residencial,50,22000
+P02,Estándar 100,Residencial,100,30000
+P03,Plus 300,Residencial,300,42000
+P04,Premium 600,Residencial,600,58000
+P05,Fibra Total 1000,Residencial,1000,75000
+P06,Empresa 500,Comercial,500,95000
