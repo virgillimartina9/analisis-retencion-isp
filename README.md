@@ -1,4 +1,4 @@
-*[English version below]*
+*[English version](README.en.md)*
 
 # Análisis de Retención de Clientes en un ISP
 
@@ -81,50 +81,43 @@ diagnóstico.
 
 | Problema | Registros | % | Decisión tomada |
 |---|---|---|---|
-| Filas duplicadas exactas en facturación | | | |
-| Tickets con cliente inexistente | | | |
-| `fecha_pago` en formato inconsistente | | | |
-| Montos negativos | | | |
-| Montos con error de carga (×100) | | | |
-| `satisfaccion` fuera del rango 1-5 | | | |
-| Variantes de escritura en `localidad` | | | |
-| Variantes de escritura en `tipo_cliente` | | | |
-| Nulos en datos de contacto | | | |
+| Filas duplicadas exactas en facturación | 480 | 0,47% | Eliminadas conservando una ocurrencia por `id_factura` (deduplicación con `ROW_NUMBER`). Son duplicados de transporte, no hechos de negocio: dejarlas habría inflado la facturación reportada. |
+| Tickets con cliente inexistente | 90 | 0,29% | Aislados en tabla de cuarentena (`rej_tickets_huerfanos`) y excluidos del modelo final. Distribuidos uniformemente entre categorías y períodos, por lo que su exclusión no sesga el análisis. No se eliminan, para preservar trazabilidad. |
+| `fecha_pago` en formato inconsistente (dd/mm/yyyy vs. yyyy-mm-dd) | — | — | Unificadas a `DATE` combinando dos intentos de conversión (`TRY_CONVERT` con estilo ISO y estilo dd/mm/yyyy). Crítico: interpretar mal el formato desplaza el pago varios meses y falsea la mora. |
+| Montos con error de carga (×100) | 12 | 0,01% | Corregidos dividiendo por 100. Se detectaron comparando cada monto contra 5 veces el precio del plan correspondiente — más robusto que un desvío estándar general. |
+| Montos negativos | 34 | 0,03% | **Conservados.** Son notas de crédito, un hecho de negocio legítimo, no un error de carga. |
+| `satisfaccion` fuera del rango 1-5 | ~60 | 0,19% | Anulado el valor (`NULL`) conservando el ticket. La gestión del reclamo es válida; lo inválido es la respuesta de la encuesta. |
+| Variantes de escritura en `localidad` | 6 reales → ~25 variantes | 13% de las filas | Normalizadas con `TRIM` + eliminación de tildes + mapeo contra catálogo cerrado de 6 localidades. Sin esto, el churn por localidad queda fragmentado y el hallazgo principal no aparece. |
+| Variantes de escritura en `tipo_cliente` | 2 reales → 6 variantes | — | Normalizadas con `TRIM` + `CASE` sobre texto en mayúsculas. La collation de la base (case-insensitive) las ocultaba en un `GROUP BY` estándar; se detectaron forzando una comparación binaria (`COLLATE ..._BIN2`). |
+| Bajas anteriores al alta (imposible) | 6 | 0,12% | Corregido igualando `fecha_baja` a `fecha_alta`. Los 6 casos son clientes dados de baja en su propio mes de alta: el error estaba en el día, no en el mes. Se conserva el evento de churn en vez de descartarlo, porque excluirlos subestimaría el churn de las cohortes más nuevas — justo donde más se concentra. |
+| Nulos en datos de contacto (email/teléfono) | ~9-12% | — | Conservados como `NULL`. No afectan el análisis de retención; solo limitarían una eventual campaña de contacto directo. |
 
 **Sesgo metodológico detectado y corregido:**
 
-<!-- ⬇ COMPLETAR. Contar el sesgo de exposición: al contar tickets totales por
-     cliente, los que se dieron de baja temprano acumulan menos tickets
-     simplemente porque estuvieron menos meses activos, lo que invierte la
-     relación real. La corrección fue medir en una ventana fija de 90 días
-     previos al fin de la relación. Explicarlo con tus propios números. -->
+Contar **tickets técnicos totales** por cliente sugiere que a más reclamos, *menos* churn (49,3% con 0 tickets vs. 8,8% con 6+). Es un resultado invertido: un cliente que se dio de baja al segundo mes tuvo poco tiempo para generar tickets, mientras que uno con 3 años activo acumuló muchos simplemente por seguir siendo cliente. El conteo total termina siendo un proxy de antigüedad, no de insatisfacción.
 
+La corrección es medir en una **ventana fija de 90 días previos al fin de la relación** (la baja, o la fecha de corte si el cliente sigue activo). Con esa ventana, la relación se invierte y queda coherente con la intuición de negocio: 16,2% de churn con 0 tickets técnicos en 90 días, escalando a 56,5% con 3 o más.
+
+![Sesgo de exposición: dos formas de medir, conclusiones opuestas](docs/sesgo_exposicion.png)
+
+**Limitación conocida, documentada y no resuelta en esta versión:** `mttr_horas` y `csat` en la tabla analítica se calculan sobre el historial completo del cliente, sin la misma corrección de ventana temporal aplicada a los tickets técnicos. Por eso su correlación con `churn` es prácticamente nula (0,03 y -0,01 respectivamente) frente al 0,20 de `tickets_tecnicos_90d`: es probable que ambas variables sufran el mismo sesgo de exposición y que una versión con ventana fija muestre una relación más fuerte. Queda como mejora futura.
 ---
 
 ## Hallazgos principales
 
-<!-- ⬇ COMPLETAR con 4 o 5 bullets, cada uno con su número.
-     Escribir la conclusión, no la descripción:
-       MAL  → "Se analizó la relación entre tickets y churn."
-       BIEN → "Los clientes con 3+ reclamos técnicos en 90 días se dan de baja
-               en un 56%, frente al 16% del resto." -->
-
-1.
-2.
-3.
-4.
+1. **Los reclamos técnicos recientes son el predictor más claro de baja.** Los clientes con 3 o más tickets técnicos en sus últimos 90 días activos se dan de baja en un 56,5% de los casos, frente a un 16,2% de quienes no tuvieron ninguno.
+2. **La morosidad reciente también anticipa la baja, de forma más gradual.** El churn escala de 18,1% (sin facturas impagas en los últimos 4 meses) a 45,1% (3 o más impagas).
+3. **El churn tiene una geografía marcada.** Mar de Ostende (30,5%) casi duplica a Pinamar (17,1%), lo que apunta a una diferencia de infraestructura de red entre zonas, no a un problema comercial generalizado.
+4. **Existe una estacionalidad fuerte en marzo y abril.** Esos dos meses concentran un 54% y un 40% más de bajas que el promedio mensual, coincidiendo con el fin de la temporada de verano y la salida de clientes con residencia estacional en la costa atlántica.
+5. **La antigüedad no predice el churn de forma lineal.** El grupo de 1 a 3 años de antigüedad (31,7%) churnea más que los clientes de menos de 1 año (28,3%), porque una porción de esa cohorte coincide con su primer o segundo fin de temporada estacional — el efecto del punto 4 se superpone al de la antigüedad simple.
 
 ---
 
 ## Recomendaciones
 
-<!-- ⬇ COMPLETAR con 3 recomendaciones accionables, cada una con su impacto
-     estimado en dinero o en clientes retenidos. Una recomendación sin número
-     al lado es una opinión. -->
-
-1.
-2.
-3.
+1. **Priorizar inversión de red en Mar de Ostende y Valeria del Mar**, las dos localidades con mayor churn (30,5% y 26,0%). Llevarlas al nivel de Pinamar (17,1%) reduciría de forma directa la cantidad de bajas originadas en esas dos zonas.
+2. **Reforzar la mesa de soporte técnico en marzo y abril**, anticipando el pico estacional de bajas en vez de reaccionar cuando ya ocurrió. Un cliente con 3+ tickets técnicos en 90 días tiene una probabilidad de baja 3,5 veces mayor que uno sin reclamos.
+3. **Activar contacto proactivo de retención sobre clientes activos de alto riesgo** — los que hoy combinan reclamos técnicos recientes y facturas impagas — antes de que pidan la baja, en lugar de actuar solo cuando ya se fueron.
 
 ---
 
@@ -184,195 +177,6 @@ Requisitos: SQL Server 2019+, Python 3.10+ (`pandas`, `numpy`), Power BI Desktop
 
 ## Autora
 
-**[Martina Virgilli]** — [LinkedIn](https://www.linkedin.com/in/martina-virgilli-a80b95211/)
+<!-- ⬇ COMPLETAR con nombre y LinkedIn -->
 
-----------------------------------------------------
-
-# Customer Retention Analysis for an ISP
-
-> Identifying the drivers of customer churn at an internet service provider, and
-> prioritising at-risk accounts for proactive retention.
-
-<!-- ⬇ REPLACE with the dashboard screenshot once it's ready.
-     Keep it above any text: it's the first thing a recruiter looks at, and
-     often the only thing.
-     Save it to powerbi/capturas/dashboard_resumen.png -->
-
-![Retention dashboard](powerbi/capturas/dashboard_resumen.png)
-
-**[View interactive dashboard](POWER_BI_SERVICE_URL)** · **[Executive summary (PDF)](docs/informe_ejecutivo.pdf)**
-
----
-
-## Context
-
-A telecommunications cooperative providing internet service along the Argentine
-Atlantic coast lost a significant share of its customer base over the past 24
-months. Management needs to understand why in order to decide where to invest:
-is this a pricing problem, a competition problem, or a service quality problem?
-
-**Business questions:**
-
-1. What is the monthly churn rate, and how has it evolved?
-2. Is churn concentrated in specific towns, plans, or customer segments?
-3. What is the relationship between technical support tickets and churn?
-4. What is the relationship between overdue payments and churn?
-5. How much monthly recurring revenue was lost?
-6. Which currently active customers are at risk and should be contacted first?
-
-> **A note on the data:** this dataset is **synthetic**, generated with the
-> [`generador_datos.py`](generador_datos.py) script included in this repository.
-> It does not come from any real organisation. The business model, ticket
-> categories, and seasonality patterns are modelled on how the industry
-> typically operates.
-
----
-
-## Data
-
-Four tables covering 24 months of history (Aug 2024 – Jul 2026):
-
-| Table | Records | Contents |
-|---|---|---|
-| `clientes` | 5,215 | Sign-up, cancellation, reason, plan, town, acquisition channel |
-| `planes` | 6 | Plan catalogue and pricing |
-| `facturacion` | 101,300 | Monthly billing, due dates, and collections |
-| `tickets` | 31,341 | Support tickets: category, channel, priority, resolution, CSAT |
-
-Full data dictionary in [`docs/diccionario_datos.md`](docs/diccionario_datos.md).
-
----
-
-## Approach
-
-| Phase | Tool | What was done |
-|---|---|---|
-| 1. Modelling & ingestion | SQL Server | Star schema with a staging layer; bulk load from CSV |
-| 2. Data quality | SQL Server | 10 quantified quality checks against the staging layer |
-| 3. Transformation | SQL Server | Cleaning, normalisation, and load into the final model |
-| 4. Exploratory analysis | Python / pandas | Hypothesis testing and customer-level analytical table |
-| 5. Visualisation | Power BI | Dimensional model, DAX measures, and a 3-page dashboard |
-
-**Architecture decision:** data is first ingested into an untyped staging layer
-and only transformed after quality issues have been measured. This makes it
-possible to quantify how dirty the source is, rather than having the load fail
-with no diagnosis.
-
----
-
-## Data quality issues found
-
-<!-- ⬇ FILL IN with the actual results from sql/03_calidad_datos.sql.
-     This is the section recruiters value most and that almost nobody writes.
-     The "Action taken" column matters most: spotting a problem is easy,
-     justifying what you did about it is what demonstrates judgement. -->
-
-| Issue | Records | % | Action taken |
-|---|---|---|---|
-| Exact duplicate rows in billing | | | |
-| Tickets referencing non-existent customers | | | |
-| Inconsistent `fecha_pago` date formats | | | |
-| Negative amounts | | | |
-| Data-entry errors in amounts (×100) | | | |
-| `satisfaccion` outside the 1–5 range | | | |
-| Spelling variants in `localidad` | | | |
-| Spelling variants in `tipo_cliente` | | | |
-| Missing contact details | | | |
-
-**Methodological bias identified and corrected:**
-
-<!-- ⬇ FILL IN. Explain the exposure bias: counting total tickets per customer
-     means churned customers accumulate fewer tickets simply because they were
-     active for fewer months, which inverts the true relationship. The fix was
-     to measure within a fixed 90-day window before the end of the customer
-     relationship. Write it up with your own numbers. -->
-
----
-
-## Key findings
-
-<!-- ⬇ FILL IN with 4–5 bullets, each carrying a number.
-     Write the conclusion, not the description:
-       BAD  → "The relationship between tickets and churn was analysed."
-       GOOD → "Customers with 3+ technical tickets in 90 days churn at 56%,
-               compared to 16% for everyone else." -->
-
-1.
-2.
-3.
-4.
-
----
-
-## Recommendations
-
-<!-- ⬇ FILL IN with 3 actionable recommendations, each with an estimated impact
-     in revenue or customers retained. A recommendation without a number next
-     to it is just an opinion. -->
-
-1.
-2.
-3.
-
----
-
-## Tech stack
-
-`SQL Server` · `T-SQL` · `Python` (pandas, matplotlib) · `Power BI` (dimensional
-modelling, DAX) · `Git`
-
----
-
-## Repository structure
-
-```
-analisis-retencion-isp/
-├── generador_datos.py          Reproducible synthetic dataset generation
-├── datos/
-│   ├── raw/                    Source CSV files
-│   └── processed/              Customer-level analytical table
-├── sql/
-│   ├── 01_ddl_esquema.sql      Staging + star schema + indexes
-│   ├── 02_carga_staging.sql    Bulk load from CSV
-│   ├── 03_calidad_datos.sql    Quantified data quality checks
-│   ├── 04_transformacion.sql   Cleaning and load into the final model
-│   └── 05_analisis.sql         Business queries
-├── notebooks/
-│   └── 01_limpieza_eda.ipynb   Exploratory analysis and validation
-├── powerbi/
-│   ├── retencion_isp.pbix      Dashboard
-│   └── capturas/
-└── docs/
-    ├── diccionario_datos.md
-    └── informe_ejecutivo.pdf
-```
-
-> Note: file and column names are kept in Spanish throughout the codebase, as
-> they would be in the original business context.
-
----
-
-## How to reproduce
-
-```bash
-# 1. Generate the dataset (optional: already included in datos/raw/)
-python generador_datos.py
-
-# 2. Create the schema
-sqlcmd -S .\SQLEXPRESS -d retencion_isp -E -i sql/01_ddl_esquema.sql
-
-# 3. Load the data (update the file path inside the script first)
-sqlcmd -S .\SQLEXPRESS -d retencion_isp -E -i sql/02_carga_staging.sql
-
-# 4. Quality checks, transformation, and analysis
-sqlcmd -S .\SQLEXPRESS -d retencion_isp -E -i sql/03_calidad_datos.sql
-sqlcmd -S .\SQLEXPRESS -d retencion_isp -E -i sql/04_transformacion.sql
-```
-
-Requirements: SQL Server 2019+, Python 3.10+ (`pandas`, `numpy`), Power BI Desktop.
-
----
-
-## Author
-
-**[Martina Virgilli]** — [LinkedIn](https://www.linkedin.com/in/martina-virgilli-a80b95211/)
+**[Nombre]** — [LinkedIn](URL)
